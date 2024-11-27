@@ -3,6 +3,8 @@ import mediapipe as mp
 import torch
 import torch.nn as nn
 import numpy as np
+import torch.nn.functional as F
+
 import json
 
 
@@ -45,28 +47,42 @@ def parse_class(pred):
 class CNNModel(nn.Module):
     def __init__(self, hidden_dim, num_classes):
         super(CNNModel, self).__init__()
+        # self.layers = nn.Sequential(
+        #     nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1),  # Output: 16 x 5 x 5
+        #     nn.ReLU(),
+        #     nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1),  # Output: 32 x 5 x 5
+        #     nn.ReLU(),
+        #     nn.Flatten(),
+        #     nn.Linear(32 * 5 * 5, hidden_dim),  # Flattened input size
+        #     nn.ReLU(),
+        #     nn.Linear(hidden_dim, num_classes)
+        # )
         self.layers = nn.Sequential(
-            nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1),  # Output: 16 x 5 x 5
+            nn.Conv2d(in_channels=2, out_channels=16, kernel_size=3, stride=1, padding=1),  # Output: 16 x 5 x 5
             nn.ReLU(),
             nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1),  # Output: 32 x 5 x 5
             nn.ReLU(),
             nn.Flatten(),
             nn.Linear(32 * 5 * 5, hidden_dim),  # Flattened input size
             nn.ReLU(),
+            # nn.Linear(hidden_dim, hidden_dim),  # Flattened input size
+            # nn.ReLU(),
             nn.Linear(hidden_dim, num_classes)
         )
+       
 
     def forward(self, x):
-        return self.layers(x)
+        return F.softmax(self.layers(x), dim = 1) 
+
 
 
 input_dim = 63
-hidden_dim = 64
+hidden_dim = 256    
 num_classes = 26
 
 # Reinitialize and load the model
 loaded_model = CNNModel(hidden_dim, num_classes)
-loaded_model.load_state_dict(torch.load("cnn_model.pth"))
+loaded_model.load_state_dict(torch.load("cnn_model_2d.pth"))
 loaded_model.eval()
 
 while cap.isOpened():
@@ -91,14 +107,18 @@ while cap.isOpened():
 
             input = keypoints_to_image(np.array([[h.x, h.y, h.z] for h in hand_landmarks.landmark])).unsqueeze(0)
             with torch.no_grad():
-                pred = torch.argmax(loaded_model(input)).item()
+                pred = loaded_model(input[:, :2])
+                print(pred)
+                score, pred = torch.max(pred, 1)
+                if score < 0.5:
+                    pred = 0
             
             pred_char = parse_class(pred)
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 1
             color = (255, 255, 255)  # White color (B, G, R)
             thickness = 2
-            cv2.putText(image, pred_char, (image.shape[1] - 150, 30), font, font_scale, color, thickness)  # Top-right corner
+            cv2.putText(image, pred_char+" " +str(score.item()), (image.shape[1] - 150, 30), font, font_scale, color, thickness)  # Top-right corner
 
 
 
