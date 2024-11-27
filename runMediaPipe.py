@@ -73,6 +73,7 @@ while cap.isOpened():
                 pred = torch.argmax(loaded_model(input)).item()
             
             pred_char = parse_class(pred)
+            print(pred_char)
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 1
             color = (255, 255, 255)  # White color (B, G, R)
