@@ -130,7 +130,7 @@ class KeypointRandDataset(Dataset):
             keypoints = self.keypoints_to_image(keypoints)
 
         return torch.tensor(keypoints, dtype=torch.float32), torch.tensor(category, dtype=torch.long)
-    
+
 
 
 class KeypointRotDataset(Dataset):
