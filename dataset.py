@@ -7,6 +7,7 @@ import numpy as np
 import mediapipe as mp
 import cv2
 import os
+import pandas as pd
 
 
 class KeypointRandDataset(Dataset):
@@ -132,9 +133,8 @@ class KeypointRandDataset(Dataset):
         return torch.tensor(keypoints, dtype=torch.float32), torch.tensor(category, dtype=torch.long)
 
 
-
 class KeypointRotDataset(Dataset):
-    def __init__(self, json_file, use_cnn = False, flip_prob = 0.5, transform=None):
+    def __init__(self, json_file, use_cnn = False, flip_prob = 0.5, rand_rot = False, transform=None):
         with open(json_file, 'r') as f:
             data = json.load(f)
         
@@ -158,12 +158,27 @@ class KeypointRotDataset(Dataset):
             self.flip_keypoints.append(flip_keypoints)
         
         self.use_cnn = use_cnn
+        self.random_rot = rand_rot
         
         # Normalize the keypoints if needed
         self.keypoints = np.array(self.keypoints)
         self.categories = np.array(self.categories)
         self.flip_prob = flip_prob
     
+    def update_data(self, keypoints, labels, one_indexed=True):
+        self.keypoints = keypoints
+
+        self.categories = labels
+
+        if one_indexed:
+            self.categories -= 1
+    
+    def set_cnn(self, use_cnn):
+        self.use_cnn = use_cnn
+    
+    def set_rand_rot(self, rand_rot):
+        self.random_rot = rand_rot
+
     def apply_random_rotation(self, keypoints):
         # Step 1: Translate keypoints so joint 9 becomes the origin
         center = keypoints[9]
@@ -207,8 +222,33 @@ class KeypointRotDataset(Dataset):
 
         return rotated_keypoints
 
+    def apply_random_rotation_2d(self, keypoints):
+        keypoints = keypoints.reshape(21, 2)
+        
+        # Step 1: Translate keypoints so joint 9 becomes the origin
+        center = keypoints[9]  # Assuming keypoints[9] is the origin joint
+        translated_keypoints = keypoints - center
+
+        # Step 2: Generate a random rotation angle (in radians)
+        angle = np.pi / 12  # Maximum rotation angle
+        rotation_angle = np.random.uniform(-angle, angle)  # Random angle in range [-pi/6, pi/6]
+
+        # Step 3: Create a 2D rotation matrix
+        R = np.array([
+            [np.cos(rotation_angle), -np.sin(rotation_angle)],
+            [np.sin(rotation_angle),  np.cos(rotation_angle)]
+        ])
+
+        # Step 4: Apply the rotation to the translated keypoints
+        rotated_keypoints = np.dot(translated_keypoints, R.T)
+
+        # Step 5: Translate keypoints back to the original position
+        rotated_keypoints += center
+
+        return rotated_keypoints
+
     def keypoints_to_image(self, keypoint):
-        image = torch.zeros((5, 5, 3))
+        image = torch.zeros((5, 5, 2))
 
         # Define the mapping as a 5x5 grid
         mapping = [
@@ -223,7 +263,7 @@ class KeypointRotDataset(Dataset):
             for j in range(5):
                 index = mapping[i][j]
                 if index != -1:  # If not a padded zero
-                    image[i, j, :] = torch.Tensor(keypoint[index])  # Copy keypoint data (x, y, z)
+                    image[i, j, :] = torch.tensor(keypoint[index])  # Copy keypoint data (x, y, z)
         
         return image.permute(2, 0, 1)
 
@@ -234,14 +274,15 @@ class KeypointRotDataset(Dataset):
         keypoint = self.keypoints[idx]
         category = self.categories[idx]
 
-        if np.random.rand() < self.flip_prob:
-            keypoints = self.flip_keypoints[idx]
-            
-        keypoints = self.apply_random_rotation(keypoint)
+        # if np.random.rand() < self.flip_prob:
+        #     keypoints = self.flip_keypoints[idx]
+        
+        if self.random_rot:
+            keypoint = self.apply_random_rotation_2d(keypoint)
         
         # if use cnn model, convert keypoint to 5*5 image
         if self.use_cnn:
-            keypoints = self.keypoints_to_image(keypoints)
-        
+            keypoint = self.keypoints_to_image(keypoint)
 
-        return torch.tensor(keypoints, dtype=torch.float32), torch.tensor(category, dtype=torch.long)
+        return torch.tensor(keypoint, dtype=torch.float32), torch.tensor(category, dtype=torch.long)
+

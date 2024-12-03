@@ -3,6 +3,9 @@ import mediapipe as mp
 import torch
 import torch.nn as nn
 import numpy as np
+import torch.nn.functional as F
+from openai import OpenAI
+
 import json
 
 
@@ -15,22 +18,16 @@ mp_drawing = mp.solutions.drawing_utils
 cap = cv2.VideoCapture(0)
 
 
-def parse_class(pred):
-    if pred == 0:
-        return "None"
-    elif 1 <= pred <= 26:
-        return chr(ord('A') + pred - 1)
-
-
 class MLPModel(nn.Module):
+    # model for nn_new_dataset_86.pth
     def __init__(self, input_dim, hidden_dim, num_classes):
         super(MLPModel, self).__init__()
         self.mlp = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim*2),
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(hidden_dim*2, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, num_classes)
         )
@@ -39,20 +36,61 @@ class MLPModel(nn.Module):
         return self.mlp(x)
 
 
-input_dim = 63
-hidden_dim = 256
+def parse_class(pred):
+    if pred == 0:
+        return "None"
+    elif 1 <= pred <= 26:
+        return chr(ord('A') + pred - 1)
+
+
+
+input_dim = 42
+hidden_dim = 1024    
 num_classes = 26
 
 # Reinitialize and load the model
 loaded_model = MLPModel(input_dim, hidden_dim, num_classes)
-loaded_model.load_state_dict(torch.load("mlp_model.pth"))
+loaded_model.load_state_dict(torch.load("nn_new_dataset_86.pth"))
 loaded_model.eval()
 
+
+def get_words_from_char(charString):
+    client = OpenAI()
+    response = client.chat.completions.create(
+      model="gpt-4o",
+      messages=[
+          {"role": "user", "content": f"You are a spelling correcting bot. Convert this string of characters into a sentence. some of the characters are wrong. Don't explain, just give me the answer. \n{charString}"},
+          # {"role": "user", "content": charString}
+      ]
+    )
+    return (response.choices[0].message.content)
+
+
+# Initialize MediaPipe Hands
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.5, model_complexity=1)
+mp_drawing = mp.solutions.drawing_utils
+
+# Capture video from the webcam
+cap = cv2.VideoCapture(0)
+
+if not cap.isOpened():
+    print("Failed to open camera!")
+else:
+    print("Camera initialized successfully!")
+
+
+prev_letter = None
+count = 0
+print("\n")
+
+charString = ""
 while cap.isOpened():
     success, image = cap.read()
     if not success:
         print("Ignoring empty frame.")
         continue
+
 
     # Flip the image horizontally for a selfie-view display
     image = cv2.flip(image, 1)
@@ -68,20 +106,69 @@ while cap.isOpened():
         for hand_landmarks in results.multi_hand_landmarks:
             mp_drawing.draw_landmarks(image, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
-            input = torch.flatten(torch.Tensor([[h.x, h.y, h.z] for h in hand_landmarks.landmark]))
-            with torch.no_grad():
-                pred = torch.argmax(loaded_model(input)).item()
-            
+            x_input = np.array([[h.x, h.y] for h in hand_landmarks.landmark])
+
+            # center about 9
+            x_input = x_input - x_input[9]
+
+            palm_length = np.linalg.norm(x_input[9] - x_input[0])
+
+            # flatten
+            x_input = x_input.reshape(1, -1) / palm_length
+
+            x_input = torch.tensor(x_input).float()
+
+            # make predictions
+            pred_prob = loaded_model(x_input)[0]
+            pred = torch.argmax(pred_prob) + 1
+            score = torch.max(pred_prob)
+            # pred = model.predict(x_input)[0]
+            # print(pred)
             pred_char = parse_class(pred)
-            print(pred_char)
+
+            if prev_letter is None:
+                prev_letter = pred_char
+            elif prev_letter != pred_char:
+                prev_letter = pred_char
+                count = 0
+            elif count > 50:
+                # over 90 frames ~ 3 seconds
+                # print("__")
+                charString += " "
+                prev_letter = None
+                count = 0
+            elif count == 20:
+                # at least 10 frames of the same letter
+                # print(pred_char)
+                charString += pred_char
+
+            count += 1
+
             font = cv2.FONT_HERSHEY_SIMPLEX
+            # score = 0
             font_scale = 1
-            color = (255, 255, 255)  # White color (B, G, R)
-            thickness = 2
-            cv2.putText(image, pred_char, (image.shape[1] - 150, 30), font, font_scale, color, thickness)  # Top-right corner
+            color = (0, 255, 0)  # White color (B, G, R)
+            thickness = 5
+            cv2.putText(image, pred_char+" " +str(score), (image.shape[1] - 150, 30), font, font_scale, color, thickness)  # Top-right corner
 
+            # put the charString on the screen
+            font_scale = 2
+            color = (0, 255, 0)
+            thickness = 5
+            cv2.putText(image, charString.replace(" ", "_"), (10, 30), font, font_scale, color, thickness)
 
-
+    else:
+        if charString != "":
+            # no hands
+            # send to openai
+            correctedString = get_words_from_char(charString)
+            print("printing the original string")
+            print(charString)
+            print("printing the corrected string")
+            print(correctedString)
+            charString = ""
+            prev_letter = None
+            count = 0
 
     # Display the image
     cv2.imshow('MediaPipe Hands', image)
@@ -91,3 +178,4 @@ while cap.isOpened():
 
 cap.release()
 cv2.destroyAllWindows()
+
